@@ -1,0 +1,113 @@
+# Some of the stages/jobs/scripts below are conditionally ran depending on how the pipeline was triggered.
+
+resources:
+  repositories:
+    - repository: codeway
+      type: githubenterprise
+      name: codeway/templates
+      endpoint: ghe
+       
+name: $(Date:yyyyMMdd)$(Rev:.r)
+
+parameters:
+- name: includeRootFolder
+  type: boolean
+  default: false
+- name: variableGroupName
+  type: string
+  default: 'mssi-sd-serverless-role'
+- name: variableGroupPrefix
+  type: string
+  default: 'codeway'
+- name: archiveFileName
+  type: string
+  default: 'certificate-expiry-notification'
+- name: regionName
+  type: string
+  default: 'us-west-2'
+- name: s3BucketName
+  type: string
+  default: 'cost-mssi-bharat'
+- name: s3TargetFolder
+  type: string
+  default: 'Certificate-Expiry-Notification'  #folder created manually
+
+# Variable groups including configurations and secrets you want to use in this pipeline (Pipeline -> Library in ADO UI)
+variables:
+- group: ${{parameters.variableGroupName}}
+- ${{if ne(parameters.variableGroupPrefix, '')}}:
+          - name: externalId
+            value: $[variables['${{parameters.variableGroupPrefix}}_external_id']]
+          - name: roleArn
+            value: $[variables['${{parameters.variableGroupPrefix}}_role_arn']]
+- ${{if eq(parameters.variableGroupPrefix, '')}}:
+          - name: externalId
+            value: $[variables['external_id']]
+          - name: roleArn
+            value: $[variables['role_arn']]
+
+
+#trigger: none
+trigger: # Trigger on branches
+  #batch: true
+  branches:
+    include:
+      - master
+pr: # Trigger on pull requests towards branches
+  #autoCancel: false
+  branches:
+    include:
+      - master
+
+pool: CodeWayAWSLinux
+
+# - template: steps/aws-assumerole-v0.yaml@codeway
+#   parameters:
+#     roleARN: $(roleArn)
+#     externalId: $(externalId)
+
+
+steps:
+
+- template: steps/aws-assumerole-v0.yaml@codeway
+  parameters:
+    roleARN: $(roleArn)
+    externalId: $(externalId)
+
+- task: ArchiveFiles@2
+  inputs:
+    rootFolderOrFile: '$(Build.SourcesDirectory)/src'
+    includeRootFolder: ${{ parameters.includeRootFolder }}
+    archiveType: 'zip'
+    archiveFile: '$(Build.ArtifactStagingDirectory)/${{ parameters.archiveFileName }}.zip'
+    replaceExistingArchive: true
+    verbose: true
+
+# - task: AmazonWebServices.aws-vsts-tools.S3Upload.S3Upload@1
+#   inputs:
+#     regionName: ${{ parameters.regionName }}
+#     bucketName: ${{ parameters.s3BucketName }}
+#     sourceFolder: '$(Build.ArtifactStagingDirectory)'
+#     globExpressions: '**/${{ parameters.archiveFileName }}.zip'
+#     targetFolder: ${{ parameters.s3TargetFolder }}
+#     filesAcl: 'bucket-owner-full-control'
+
+# - task: PublishBuildArtifacts@1
+#   inputs:
+#     pathToPublish: '$(Build.ArtifactStagingDirectory)/zipfile'
+#     artifactName: '${{ parameters.archiveFileName }}'
+
+
+- bash: |
+   pwd
+   
+   git config --global user.name 'abhilash-kumar-kopparapu'
+   git config --global user.email 'abhilash.kumar.kopparapu@hp.com'
+
+   git add .
+   git status
+   git commit -m "Uploaded zip file"
+   #git push $https://github.azc.ext.hp.com:MSSI/Certificate-expiry-notification.git
+   git push ://github.azc.ext.hp.com:MSSI/Certificate-expiry-notification.git HEAD:master
+ # workingDirectory: '$(Build.ArtifactStagingDirectory)/zipfile'
+  displayName: 'Github Commit and Push'
