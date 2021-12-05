@@ -2,63 +2,7 @@
 	"hostdetails":
 	[			
 		{
-			"hostname":"dcc.ext.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"dcc-pro.msit.hpcloud.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"enablementservice.msit.hpcloud.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"enablement-service-itg.mssi.corp.hpicloud.net",
-			"port":443
-		},	
-		{
-			"hostname":"suppliesmapping-dev.corp.hpicloud.net",
-			"port":443
-		},
-		{
-			"hostname":"api.enablementservice.msit.hpcloud.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"suppliesmapping.corp.hpicloud.net",
-			"port":443
-		},
-		{
-			"hostname":"supplies-mapping-bff-service.hpcloud.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"supplies-mapping-service.hpcloud.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"incidentservice.msit.hpcloud.hp.com",
-			"port":443
-		},
-		{
-			"hostname":"suppliesmapping-dev.corp.hpicloud.net",
-			"port":443
-		},
-		{
-			"hostname":"jenkins.mssi.corp.hpicloud.net",
-			"port":443
-		},
-		{
-			"hostname":"jenkins.msit.corp.hpicloud.net",
-			"port":443
-		},
-        {
-			"hostname":"incidentservice-dev.hpcloud.hp.com",
-			"port":443
-		},
-        {
-			"hostname":"enablement-service-itg.mssi.corp.hpicloud.net",
+			"hostname":"example.com",
 			"port":443
 		}
 	]
