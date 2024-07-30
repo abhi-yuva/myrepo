@@ -120,9 +120,9 @@ def get_hr_status(namespace: string, name: string, version: string, image_versio
     output = get_response('hr', namespace, name, kubeconfig_path)
     if output is None:
         return None
-    if not "lastAppliedRevision" in output["status"]:
+    if not "lastAttemptedRevision" in output["status"]:
         return "Chart Install Pending"
-    if "lastAppliedRevision" in output["status"] and output["status"]["lastAppliedRevision"] != version:
+    if "lastAttemptedRevision" in output["status"] and output["status"]["lastAttemptedRevision"] != version:
         return "Pending Chart Upgrade"
     conditions = output["status"]["conditions"]
     if len(conditions) > 1 and conditions[1]["type"] == "Released" and conditions[1]["status"] != "True":
@@ -168,15 +168,18 @@ def get_deploy(namespace: string, name: string, stable_rs: string, kubeconfig_pa
             deploy.image = container["image"]
     for condition in output["status"]["conditions"]:
         if condition["type"] == "Available":
-            deploy.available_status = f'{condition["status"]} - {condition["message"]}'
+            deploy.available_status = f'{
+                condition["status"]} - {condition["message"]}'
             if condition["status"] == "True":
                 deploy.available_status = condition["status"]
         if condition["type"] == "Progressing":
-            deploy.progress_status = f'{condition["status"]} - {condition["message"]}'
+            deploy.progress_status = f'{
+                condition["status"]} - {condition["message"]}'
             if condition["status"] == "True":
                 deploy.progress_status = condition["status"]
     if stable_rs is not None:
-        deploy.stable_rs = get_rs(namespace, f'{name}-{stable_rs}', kubeconfig_path)
+        deploy.stable_rs = get_rs(
+            namespace, f'{name}-{stable_rs}', kubeconfig_path)
     return deploy
 
 
@@ -212,7 +215,8 @@ def read_file(file_path: Path, lock: Lock, charts_version: string, primary_kubec
                     git_url = (doc["spec"]["values"]["url"]
                                ).removesuffix(".git").replace("ssh://git@", "https://")
                     service_name = name.removesuffix("-wrapper")
-                    image = f"{harbor_registry}/{harbor_repository}:{image_tag}"
+                    image = f"{
+                        harbor_registry}/{harbor_repository}:{image_tag}"
                     gitops = Gitops(name, namespace, charts_version, image)
                     # print(f"getting user from {git_url}")
                     # user = get_user_from_git(git_url, image_tag)
@@ -247,13 +251,14 @@ def read_file(file_path: Path, lock: Lock, charts_version: string, primary_kubec
 
                             gitops.service.rollout_status, stable_rs = get_rollout_status(
                                 namespace, service_name, primary_kubeconfig_path)
-                            deploy = get_deploy(namespace, service_name, stable_rs, primary_kubeconfig_path)
+                            deploy = get_deploy(
+                                namespace, service_name, stable_rs, primary_kubeconfig_path)
                             gitops.service.deploy = deploy
                             if len(failover_kubeconfig_path) > 0:
                                 _, failover_stable_rs = get_rollout_status(
-                                namespace, service_name, failover_kubeconfig_path)
+                                    namespace, service_name, failover_kubeconfig_path)
                                 failover_deploy = get_deploy(
-                                    namespace, service_name,failover_stable_rs, failover_kubeconfig_path)
+                                    namespace, service_name, failover_stable_rs, failover_kubeconfig_path)
                                 if deploy.image != failover_deploy.image or (deploy.stable_rs.ready_replicas > 0 and failover_deploy.stable_rs.ready_replicas == 0) or gitops.service.rollout_status == "Failed":
                                     write_content_safely(
                                         _services_to_check_path, f"{namespace}, {service_name}, {deploy.image}, {failover_deploy.image}, {deploy.image == failover_deploy.image}, {deploy.stable_rs.ready_replicas}, {failover_deploy.stable_rs.ready_replicas}, {gitops.service.rollout_status}\n", lock)
@@ -267,13 +272,14 @@ def read_file(file_path: Path, lock: Lock, charts_version: string, primary_kubec
                     if write_to_console:
                         print(f"{gitops.toJson()}\n")
                         print(
-                            f"ConfigOnly: {config_only}\nCanaryAndPrimaryHaveSameImage: {(gitops.service.deploy.image == gitops.service.deploy.stable_rs.image)}\nPrimarySyncedWithGitops: {(image==gitops.service.deploy.image)}")
+                            f"ConfigOnly: {config_only}\nCanaryAndPrimaryHaveSameImage: {(gitops.service.deploy.image == gitops.service.deploy.stable_rs.image)}\nPrimarySyncedWithGitops: {(image == gitops.service.deploy.image)}")
 
         except Exception as e:
             write_content(_failed_files_path,
                           f"Failed to load Yaml for {file_path} \n")
             print(f"Failed to read file {file_path}", e)
             traceback.print_exc()
+
 
 def write_content(file_name: string, content: string, access_mode="a"):
     with open(file_name, access_mode) as file:
@@ -376,18 +382,20 @@ def get_commit_sha(git_repository_url: string, git_tag: string):
 
 def execute_work(gitops_path: string, lock: Lock, charts_version: string, primary_kubeconfig_path: string, failover_kubeconfig_path: string):
     threads = []
-    #pull_orgin(gitops_path)
+    # pull_orgin(gitops_path)
     services_paths = Path(gitops_path).glob('projects/**/services/*.yaml')
 
     for path in services_paths:
-        t = Thread(target=read_file, args=(path, lock, charts_version, primary_kubeconfig_path, failover_kubeconfig_path))
+        t = Thread(target=read_file, args=(path, lock, charts_version,
+                   primary_kubeconfig_path, failover_kubeconfig_path))
         threads.append(t)
         t.start()
         if (len(threads) == _number_of_threads):
             for t in threads:
                 t.join()
             threads = []
-            #pull_orgin(gitops_path)
+            # pull_orgin(gitops_path)
+
 
 def get_current_context():
     output = ""
@@ -448,7 +456,7 @@ def main():
 
     if (not path.exists(str(gitops_repo_path))) and (not path.exists(str(gitops_file_path))):
         print("Please provide valid gitops repo path or file path")
-        return  
+        return
 
     if aws_profile is None or len(aws_profile) == 0:
         aws_profile = input("Enter AWS Profile name: ")
@@ -464,15 +472,18 @@ def main():
         failover_cluster_name = input("Enter Failover Cluster Name: ")
 
     if len(aws_profile) > 0 and len(primary_cluster_name) > 0 and len(cluster_region) > 0:
-        _primary_kubeconfig_path = f"{Path.cwd().as_posix()}/{primary_cluster_name}"
+        _primary_kubeconfig_path = f"{
+            Path.cwd().as_posix()}/{primary_cluster_name}"
         get_kubeconfig(aws_profile, primary_cluster_name, cluster_region,
                        _primary_kubeconfig_path)
 
     if len(aws_profile) > 0 and failover_cluster_name is not None and len(failover_cluster_name) > 0 and len(cluster_region) > 0:
-        _failover_kubeconfig_path = f"{Path.cwd().as_posix()}/{failover_cluster_name}"
+        _failover_kubeconfig_path = f"{
+            Path.cwd().as_posix()}/{failover_cluster_name}"
         get_kubeconfig(aws_profile, failover_cluster_name, cluster_region,
                        _failover_kubeconfig_path)
-        _services_to_check_path = f"{failover_cluster_name}_services_to_check.csv"
+        _services_to_check_path = f"{
+            failover_cluster_name}_services_to_check.csv"
 
         write_content(_services_to_check_path,
                       "Namespace, ServiceName, ImageName, FailoverImageName, PrimaryAndFailoverSameImage?, ReadyReplicas, FailoverReadyReplicas, CanaryStatus, Contact\n", "w")
@@ -486,7 +497,7 @@ def main():
     if charts_version is None:
         charts_version = "2.0.32"
         default_chart_version = input(
-        f"proceed to check with charts version {charts_version} in primary cluster (Y)es/(N)o: ").lower()
+            f"proceed to check with charts version {charts_version} in primary cluster (Y)es/(N)o: ").lower()
         default_chart_version = default_chart_version == "y" or default_chart_version == "yes"
         if not default_chart_version:
             charts_version = input("Enter primary cluster Charts Version: ")
@@ -495,7 +506,7 @@ def main():
         read_file(gitops_file_path, lock, charts_version, _primary_kubeconfig_path,
                   _failover_kubeconfig_path, True)
         return
-    
+
     if gitops_repo_path is None:
         gitops_repo_path = input("Enter gitOpsPath: ")
 
@@ -504,12 +515,13 @@ def main():
         f"starting at analyzing files in path {gitops_repo_path} at {start_time}")
 
     execute_work(gitops_repo_path, lock, charts_version, _primary_kubeconfig_path,
-                _failover_kubeconfig_path)
+                 _failover_kubeconfig_path)
 
     end_time = datetime.now()
     print(
         f"completed analyzing files in path {gitops_repo_path} at {end_time}")
     print("timetaken: ", (end_time-start_time))
+
 
 if __name__ == '__main__':
     main()
