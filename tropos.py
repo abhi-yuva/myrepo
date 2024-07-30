@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime
 import json
+import re
 import string
 import subprocess
 from pathlib import Path
@@ -60,10 +61,10 @@ class Config:
 
 
 class Gitops:
-    def __init__(self, name: string, namespace: string, chart_ref: string, image: string):
+    def __init__(self, name: string, namespace: string, charts_version: string, image: string):
         self.name = name
         self.namespace = namespace
-        self.chart_ref = chart_ref
+        self.charts_version = charts_version
         self.image = image
         self.status = ""
         self.service = Service()
@@ -74,7 +75,7 @@ class Gitops:
                           sort_keys=True, indent=4)
 
     def toCsv(self):
-        return f"{self.namespace}, {self.name}, {self.chart_ref}, {self.image} ,{self.status}, {self.config.toCsv()}, {self.service.toCsv()}"
+        return f"{self.namespace}, {self.name}, {self.charts_version}, {self.image} ,{self.status}, {self.config.toCsv()}, {self.service.toCsv()}"
 
 
 def get_response(resource_type: string, namespace: string, name: string, kubeconfig_path: string):
@@ -98,25 +99,34 @@ def get_helm_history(namespace: string, name: string, kubeconfig_path: string):
         output = subprocess.check_output(
             ['helm', 'history', '-n', namespace, name, '-o', 'yaml', '--max', '1', '--kubeconfig', kubeconfig_path])
         response = yaml.safe_load(output)
-        return response[0]["description"]
+        return join_sentences(response[0]["description"])
     except:
         return None
 
 
-def get_hr_status(namespace: string, name: string, kubeconfig_path: string):
+def get_hr_status(namespace: string, name: string, version: string, image_version: string, kubeconfig_path: string):
     output = get_response('hr', namespace, name, kubeconfig_path)
     if output is None:
-        return None, None, None
-    release_status = ""
-    if "releaseStatus" in output["status"]:
-        release_status = output["status"]["releaseStatus"]
-    else:
-        release_status = f'Phase - {output["status"]["phase"]}'
-    image_tag = ""
-    if "values" in output["spec"] and "image" in output["spec"]["values"]:
-        image_tag = output["spec"]["values"]["image"]["tag"]
+        return None
+    if not "lastAttemptedRevision" in output["status"]:
+        return "Chart Install Pending"
+    if "lastAttemptedRevision" in output["status"] and output["status"]["lastAttemptedRevision"] != version:
+        return "Pending Chart Upgrade"
+    conditions = output["status"]["conditions"]
+    if len(conditions) > 1 and conditions[1]["type"] == "Released" and conditions[1]["status"] != "True":
+        return join_sentences(conditions[1]["message"])
+    if conditions[0]["type"] == "Ready" and conditions[0]["status"] != "True":
+        return join_sentences(conditions[0]["message"])
+    if "image" in output["spec"]["values"] and image_version != output["spec"]["values"]["image"]["tag"]:
+        return "Pending Helm Upgrade"
+    return "deployed"
 
-    return output["spec"]["chart"]["ref"], release_status, image_tag
+
+def join_sentences(message: string):
+    pattern = re.compile(r'\n')
+    message = re.sub(pattern, '---', message)
+    message = re.sub(',', '##', message)
+    return message.strip()
 
 
 def get_canary_status(namespace: string, name: string, kubeconfig_path: string):
@@ -136,11 +146,13 @@ def get_deploy_status(namespace: string, name: string, kubeconfig_path: string):
             deploy.image = container["image"]
     for condition in output["status"]["conditions"]:
         if condition["type"] == "Available":
-            deploy.available_status = f'{condition["status"]} - {condition["message"]}'
+            deploy.available_status = f'{
+                condition["status"]} - {condition["message"]}'
             if condition["status"] == "True":
                 deploy.available_status = condition["status"]
         if condition["type"] == "Progressing":
-            deploy.progress_status = f'{condition["status"]} - {condition["message"]}'
+            deploy.progress_status = f'{
+                condition["status"]} - {condition["message"]}'
             if condition["status"] == "True":
                 deploy.progress_status = condition["status"]
     if "replicas" in output["status"]:
@@ -152,12 +164,11 @@ def get_deploy_status(namespace: string, name: string, kubeconfig_path: string):
     return deploy
 
 
-def read_file(file_path: Path, lock: Lock, primary_kubeconfig_path: string, failover_kubeconfig_path='', write_to_console=False, update_gitops=False):
+def read_file(file_path: Path, lock: Lock, charts_version: string, primary_kubeconfig_path: string, failover_kubeconfig_path='', write_to_console=False, update_gitops=False):
     with open(file_path, 'r') as file:
         try:
             docs = list(yaml.safe_load_all(file))
             for doc in docs:
-
                 if "spec" in doc and "values" in doc["spec"] and "image" in doc["spec"]["values"]:
                     config_only = False
                     if "configOnly" in doc["spec"]["values"]:
@@ -165,40 +176,33 @@ def read_file(file_path: Path, lock: Lock, primary_kubeconfig_path: string, fail
                     image_tag = doc["spec"]["values"]["image"]["tag"]
                     harbor_repository = doc["spec"]["values"]["image"]["repository"]
                     harbor_registry = doc["spec"]["values"]["image"]["registry"]
-                    chart_ref = doc["spec"]["chart"]["ref"]
-                    service_chart_ref = doc["spec"]["values"]["chartBranch"]
                     namespace = doc["metadata"]["namespace"]
                     name = doc["metadata"]["name"]
                     git_url = (doc["spec"]["values"]["url"]
-                               ).removesuffix(".git")
-                    service_name = name.removesuffix("-app")
-                    image = f"{harbor_registry}/{harbor_repository}:{image_tag}"
-                    gitops = Gitops(name, namespace, chart_ref, image)
+                               ).removesuffix(".git").replace("ssh://git@", "https://")
+                    service_name = name.removesuffix("-wrapper")
+                    image = f"{
+                        harbor_registry}/{harbor_repository}:{image_tag}"
+                    gitops = Gitops(name, namespace, charts_version, image)
                     user = get_user_from_git(git_url, image_tag)
 
-                    app_hr_ref, app_hr_status, tag = get_hr_status(
-                        namespace, f'{service_name}-app', primary_kubeconfig_path)
-                    gitops.status = app_hr_status
-                    if tag != image_tag:
-                        gitops.status = "Helm Install yet to start."
-                    if app_hr_ref != chart_ref:
-                        gitops.status = "Pending Upgrade"
-                    if app_hr_status != "deployed":
+                    wrapper_hr_status = get_hr_status(
+                        namespace, f'{service_name}-wrapper', charts_version, image_tag, primary_kubeconfig_path)
+                    gitops.status = wrapper_hr_status
+                    if wrapper_hr_status != "deployed":
                         helm_history_status = get_helm_history(
-                            namespace, f'{service_name}-app', primary_kubeconfig_path)
+                            namespace, f'{service_name}-wrapper', primary_kubeconfig_path)
                         if helm_history_status is not None:
                             gitops.status = helm_history_status
                     if not config_only:
-                        config_hr_ref, config_hr_status, tag = get_hr_status(
-                            namespace, f'{service_name}-tr0p0s-config', primary_kubeconfig_path)
-                        gitops.config.name = f'{service_name}-tr0p0s-config'
+                        config_hr_status = get_hr_status(
+                            namespace, f'{service_name}-c0nfig', charts_version, image_tag, primary_kubeconfig_path)
+                        gitops.config.name = f'{service_name}-c0nfig'
                         gitops.config.status = config_hr_status
-                        if config_hr_ref != chart_ref:
-                            gitops.status = "Pending Upgrade"
 
                         if config_hr_status == "deployed":
-                            service_hr_ref, service_hr_status, tag = get_hr_status(
-                                namespace, f'{service_name}-service', primary_kubeconfig_path)
+                            service_hr_status = get_hr_status(
+                                namespace, service_name, charts_version, image_tag, primary_kubeconfig_path)
                             gitops.service.status = service_hr_status
                             if service_hr_status != "deployed":
                                 helm_history_status = get_helm_history(
@@ -206,11 +210,7 @@ def read_file(file_path: Path, lock: Lock, primary_kubeconfig_path: string, fail
                                 if helm_history_status is not None:
                                     gitops.service.status = helm_history_status
                             gitops.service.image = image
-                            gitops.service.name = f'{service_name}-service'
-                            if tag != image_tag:
-                                gitops.service.status = "Helm Install yet to start."
-                            if service_hr_ref != service_chart_ref:
-                                gitops.service.status = f"Pending Upgrade. from {service_hr_ref} to {service_chart_ref}"
+                            gitops.service.name = service_name
 
                             gitops.service.canary_status = get_canary_status(
                                 namespace, service_name, primary_kubeconfig_path)
@@ -226,12 +226,12 @@ def read_file(file_path: Path, lock: Lock, primary_kubeconfig_path: string, fail
                             if len(failover_kubeconfig_path) > 0:
                                 failover_primary_deploy = get_deploy_status(
                                     namespace, f"{service_name}-primary", failover_kubeconfig_path)
-                                if primary_deploy.image != failover_primary_deploy.image or (primary_deploy.ready_replicas > 0 and failover_primary_deploy.ready_replicas == 0 ) or gitops.service.canary_status == "Failed":
+                                if primary_deploy.image != failover_primary_deploy.image or (primary_deploy.ready_replicas > 0 and failover_primary_deploy.ready_replicas == 0) or gitops.service.canary_status == "Failed":
                                     write_content_safely(
                                         _services_to_check_path, f"{namespace}, {service_name}, {primary_deploy.image}, {failover_primary_deploy.image}, {primary_deploy.image == failover_primary_deploy.image}, {primary_deploy.ready_replicas}, {failover_primary_deploy.ready_replicas}, {gitops.service.canary_status}, {user}\n", lock)
                         else:
                             helm_history_status = get_helm_history(
-                                namespace, f'{service_name}-tr0p0s-config', primary_kubeconfig_path)
+                                namespace, f'{service_name}-c0nfig', primary_kubeconfig_path)
                             if helm_history_status is not None:
                                 gitops.config.status = helm_history_status
                     write_content_safely(
@@ -239,7 +239,7 @@ def read_file(file_path: Path, lock: Lock, primary_kubeconfig_path: string, fail
                     if write_to_console:
                         print(f"{gitops.toJson()}\n")
                         print(
-                            f"ConfigOnly: {config_only}\nCanaryAndPrimaryHaveSameImage: {(gitops.service.canary.image == gitops.service.primary.image)}\nPrimarySyncedWithGitops: {(image==gitops.service.primary.image)}")
+                            f"ConfigOnly: {config_only}\nCanaryAndPrimaryHaveSameImage: {(gitops.service.canary.image == gitops.service.primary.image)}\nPrimarySyncedWithGitops: {(image == gitops.service.primary.image)}")
         except Exception as e:
             write_content(_failed_files_path,
                           f"Failed to load Yaml for {file_path} \n")
@@ -346,14 +346,14 @@ def get_commit_sha(git_repository_url: string, git_tag: string):
     return None
 
 
-def execute_work(gitops_path: string, lock: Lock, primary_kubeconfig_path: string, failover_kubeconfig_path: string, disable_root: bool):
+def execute_work(gitops_path: string, lock: Lock, charts_version: string, primary_kubeconfig_path: string, failover_kubeconfig_path: string, disable_root: bool):
     threads = []
     pull_orgin(gitops_path)
     services_paths = Path(gitops_path).glob('projects/**/services/*.yaml')
 
     for path in services_paths:
         t = Thread(target=read_file, args=(
-            path, lock, primary_kubeconfig_path, failover_kubeconfig_path, disable_root))
+            path, lock, charts_version, primary_kubeconfig_path, failover_kubeconfig_path, disable_root))
         threads.append(t)
         t.start()
         if (len(threads) == _number_of_threads):
@@ -406,19 +406,23 @@ def main():
         '--cluster-region',
         help='EKS Cluster Region.')
     parser.add_argument(
-        '--primary-cluster-name',
-        help='Primary Cluster Name.')
+        '--cluster-name',
+        help='Cluster Name.')
     parser.add_argument(
         '--failover-cluster-name',
         help='Failover Cluster Name')
+    parser.add_argument(
+        '--charts-version',
+        help='Tropos charts version')
 
     argsval = parser.parse_args()
     gitops_repo_path = argsval.gitops_repo_path
     gitops_file_path = argsval.gitops_file_path
     aws_profile = argsval.aws_profile
     cluster_region = argsval.cluster_region
-    primary_cluster_name = argsval.primary_cluster_name
+    primary_cluster_name = argsval.cluster_name
     failover_cluster_name = argsval.failover_cluster_name
+    charts_version = argsval.charts_version
 
     if aws_profile is None or len(aws_profile) == 0:
         aws_profile = input("Enter AWS Profile name: ")
@@ -434,28 +438,38 @@ def main():
         failover_cluster_name = input("Enter Failover Cluster Name: ")
 
     if len(aws_profile) > 0 and len(primary_cluster_name) > 0 and len(cluster_region) > 0:
-        _primary_kubeconfig_path = f"{Path.cwd().as_posix()}/{primary_cluster_name}"
+        _primary_kubeconfig_path = f"{
+            Path.cwd().as_posix()}/{primary_cluster_name}"
         get_kubeconfig(aws_profile, primary_cluster_name, cluster_region,
                        _primary_kubeconfig_path)
-        
+
     if len(aws_profile) > 0 and failover_cluster_name is not None and len(failover_cluster_name) > 0 and len(cluster_region) > 0:
-        _failover_kubeconfig_path = f"{Path.cwd().as_posix()}/{failover_cluster_name}"
+        _failover_kubeconfig_path = f"{
+            Path.cwd().as_posix()}/{failover_cluster_name}"
         get_kubeconfig(aws_profile, failover_cluster_name, cluster_region,
                        _failover_kubeconfig_path)
-        _services_to_check_path = f"{failover_cluster_name}_services_to_check.csv"
-        
+        _services_to_check_path = f"{
+            failover_cluster_name}_services_to_check.csv"
+
         write_content(_services_to_check_path,
-                            "Namespace, ServiceName, ImageName, FailoverImageName, PrimaryAndFailoverSameImage?, ReadyReplicas, FailoverReadyReplicas, CanaryStatus, Contact\n", "w")
-        
+                      "Namespace, ServiceName, ImageName, FailoverImageName, PrimaryAndFailoverSameImage?, ReadyReplicas, FailoverReadyReplicas, CanaryStatus, Contact\n", "w")
+
     _failed_files_path = f"{primary_cluster_name}_failed_files.txt"
     _deploy_status_path = f"{primary_cluster_name}_deploy_status.csv"
 
     write_content(_deploy_status_path, "Project, WrapperChartName, WrapperChartVersion, ImageVersion, WrapperChartStatus, ConfigChartName, ConfigChartStatus, ServiceChartName, ImageVersion, ServiceChartStatus, CanaryStatus, CanaryImageVersion, CanaryAvailableStatus, CanaryProgressStatus, CanaryReplicas, CanaryAvailableReplicas, CanaryReadyReplicas, PrimaryImageVersion, PrimaryAvailableStatus, PrimaryProgressStatus, PrimaryReplicas, PrimaryAvailableReplicas, PrimaryReadyReplicas, CanaryPrimarySame?, PrimarySyncedWithGitops?, ConfigOnly?, Contact\n", "w")
     write_content(_failed_files_path, "", "w")
-    
+
+    if charts_version is None:
+        charts_version = "1.0.44"
+        default_chart_version = input(
+            f"proceed to check with charts version {charts_version} (Y)es/(N)o: ").lower()
+        default_chart_version = default_chart_version == "y" or default_chart_version == "yes"
+        if not default_chart_version:
+            charts_version = input("Enter Charts Version: ")
 
     if gitops_file_path is not None:
-        read_file(gitops_file_path, lock, _primary_kubeconfig_path,
+        read_file(gitops_file_path, lock, charts_version, _primary_kubeconfig_path,
                   _failover_kubeconfig_path, True)
         return
     if gitops_repo_path is None:
@@ -465,7 +479,7 @@ def main():
     print(
         f"starting at analyzing files in path {gitops_repo_path} at {start_time}")
 
-    execute_work(gitops_repo_path, lock, _primary_kubeconfig_path,
+    execute_work(gitops_repo_path, lock, charts_version, _primary_kubeconfig_path,
                  _failover_kubeconfig_path, False)
 
     end_time = datetime.now()
